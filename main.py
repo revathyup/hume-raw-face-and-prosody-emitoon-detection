@@ -1,5 +1,7 @@
 from dotenv import load_dotenv
-load_dotenv()
+# Always let this project's .env override any machine-wide vars,
+# so the correct OpenAI / Hume keys are used.
+load_dotenv(override=True)
 
 import asyncio
 import os
@@ -7,6 +9,7 @@ from config import settings
 from services.furhat_text_chat import FurhatTextChat
 from services.furhat_camera import FurhatCamera
 from services.hume_face_stream import HumeFaceStream
+from services.hume_prosody_stream import HumeProsodyStream
 from furhat_realtime_api.async_furhat_client import AsyncFurhatClient
 from emotion import EmotionHistory
 
@@ -22,13 +25,21 @@ async def main():
     # Optional separate Furhat client for camera/Hume
     furhat_cam = AsyncFurhatClient(settings.furhat_ip, auth_key=settings.furhat_auth_key) if enable_hume else None
 
-    chat = FurhatTextChat(furhat_ctrl, emotion_history=emotion_history)
+    prosody = HumeProsodyStream() if enable_hume else None
+    chat = FurhatTextChat(furhat_ctrl, emotion_history=emotion_history, prosody_sink=prosody)
     camera = FurhatCamera(furhat_cam) if enable_hume else None
     hume = HumeFaceStream(history=emotion_history) if enable_hume else None
 
     print("Connecting to Furhat (control)...")
     await furhat_ctrl.connect()
     print("Connected (control).")
+
+    # Start microphone audio stream for prosody if available
+    try:
+        await furhat_ctrl.request_audio_start()
+        print("Furhat mic audio stream started.")
+    except Exception as e:
+        print(f"[WARN] Could not start Furhat mic audio stream: {e}")
 
     if enable_hume and furhat_cam is not None:
         print("Connecting to Furhat (camera)...")
@@ -41,6 +52,8 @@ async def main():
     tasks = [chat.run()]  # Furhat STT ↔ OpenAI Chat ↔ Furhat TTS
     if enable_hume and hume and camera:
         tasks.append(hume.run(camera))  # Camera → Hume → emotion vector
+    if enable_hume and prosody:
+        tasks.append(prosody.run(debug=os.environ.get("DEBUG_AUDIO_KEYS") == "1"))
 
     try:
         results = await asyncio.gather(*tasks, return_exceptions=True)

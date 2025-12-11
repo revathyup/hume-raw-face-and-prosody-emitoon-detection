@@ -1,15 +1,31 @@
-from dataclasses import dataclass
 import os
+from dotenv import load_dotenv
 
-@dataclass
+load_dotenv()
+
+
 class Settings:
-    furhat_ip: str = "192.168.1.108"      # 你的 Furhat IP
+    """Global configuration used across the system."""
+
+    # Furhat
+    furhat_ip: str = os.getenv("FURHAT_IP", "localhost")
     furhat_auth_key: str = os.getenv("FURHAT_AUTH_KEY", "")
 
-    # OpenAI text model
-    openai_chat_model: str = "gpt-4.1-mini"
+    # Hume API key
+    hume_api_key: str = os.getenv("HUME_API_KEY")
 
-    # Hume
-    hume_api_key: str = os.getenv("HUME_API_KEY", "")
+    # OpenAI
+    openai_api_key: str = os.getenv("OPENAI_API_KEY")
+    openai_chat_model: str = os.getenv("OPENAI_CHAT_MODEL", "gpt-4.1")
 
+    # Sanity checks
+    def validate(self):
+        if not self.hume_api_key:
+            raise RuntimeError("Missing HUME_API_KEY in .env")
+        if not self.openai_api_key:
+            raise RuntimeError("Missing OPENAI_API_KEY in .env")
+
+
+# Create global settings object
 settings = Settings()
+settings.validate()

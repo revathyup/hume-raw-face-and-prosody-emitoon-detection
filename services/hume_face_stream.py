@@ -25,7 +25,7 @@ class HumeFaceStream:
         # 初始化 Hume Async Client
         self.client = AsyncHumeClient(api_key=settings.hume_api_key)
         # 配置 StreamFace 模型
-        self.model_config = Config(face=StreamFace(), prosody={})
+        self.model_config = Config(face=StreamFace())
         # 控制打印频率（不降低检测频率，只减少终端刷屏）
         self.print_every = int(os.environ.get("HUME_PRINT_EVERY", "1"))
         self._frame_idx = 0  # 仅在拿到帧时计数，避免空循环干扰节流
