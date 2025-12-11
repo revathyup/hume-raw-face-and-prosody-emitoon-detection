@@ -2,9 +2,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import io
 import os
 from typing import Dict, Any, List, Optional
 
+import numpy as np
+import soundfile as sf
 from openai import OpenAI
 from furhat_realtime_api.async_furhat_client import AsyncFurhatClient
 from furhat_realtime_api.events import Events
@@ -132,15 +135,10 @@ class FurhatTextChat:
 
         print("[BOT]:", reply)
 
-        # Speak
+        # Speak via OpenAI TTS -> Furhat audio
         self.robot_speaking = True
         try:
-            await asyncio.wait_for(
-                self.furhat.request_speak_text(reply, wait=True),
-                timeout=10.0,
-            )
-        except asyncio.TimeoutError:
-            print("[WARN] TTS timeout — continuing.")
+            await self.speak_with_openai_tts(reply)
         except Exception as e:
             print(f"[ERROR] TTS failed: {e}")
 
@@ -359,6 +357,92 @@ class FurhatTextChat:
                     self.busy = False
 
             # After any initial greeting, start listening for the user.
+            await self.start_listening()
+
+            # Keep the task alive; all work happens via event handlers
+            while True:
+                await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            raise
+        finally:
+            await self.stop_listening()
+
+    # ----------------------------------------------------
+    #   OpenAI TTS -> Furhat audio helpers
+    # ----------------------------------------------------
+
+    async def speak_with_openai_tts(self, text: str) -> None:
+        """
+        Use OpenAI TTS to synthesize `text` to WAV, then stream PCM audio
+        to Furhat via request_speak_audio_* so the robot speaks with GPT voice.
+        """
+        if not text or not text.strip():
+            return
+
+        def _tts_blocking() -> bytes:
+            resp = self.client.audio.speech.create(
+                model="gpt-4o-mini-tts",
+                voice="alloy",
+                input=text,
+                response_format="wav",
+            )
+            return resp.read()
+
+        wav_bytes: bytes = await asyncio.to_thread(_tts_blocking)
+
+        with io.BytesIO(wav_bytes) as buf:
+            data, sample_rate = sf.read(buf, dtype="int16")
+
+        if data.ndim == 2:
+            data = data.mean(axis=1).astype("int16")
+
+        pcm_bytes = data.tobytes()
+
+        await self.furhat.request_speak_audio_start(
+            sample_rate=int(sample_rate), lipsync=True
+        )
+
+        chunk_size = 3200
+        for i in range(0, len(pcm_bytes), chunk_size):
+            chunk = pcm_bytes[i : i + chunk_size]
+            if not chunk:
+                continue
+            b64 = base64.b64encode(chunk).decode("ascii")
+            await self.furhat.request_speak_audio_data(b64)
+
+        await self.furhat.request_speak_audio_end()
+
+    # ----------------------------------------------------
+    #   Overridden run() using OpenAI TTS
+    # ----------------------------------------------------
+
+    async def run(self):
+        """Entry point invoked by main.py (OpenAI TTS version)."""
+        print("FurhatTextChat.run started", flush=True)
+        try:
+            # Optional initial GPT greeting so the robot talks right away.
+            initial_greeting_enabled = os.environ.get("INITIAL_GREETING", "1") != "0"
+
+            if initial_greeting_enabled:
+                try:
+                    prompt = (
+                        "Greet the user briefly as a friendly social robot "
+                        "and invite them to say something you'd like to talk about."
+                    )
+                    self.busy = True
+                    self.robot_speaking = True
+                    greeting = await self.get_openai_reply(prompt)
+                    print("[BOT/INITIAL]:", greeting)
+                    try:
+                        await self.speak_with_openai_tts(greeting)
+                    except Exception as e:
+                        print(f"[ERROR] Initial TTS failed: {e}")
+                except Exception as e:
+                    print(f"[WARN] Initial OpenAI greeting failed: {e}")
+                finally:
+                    self.robot_speaking = False
+                    self.busy = False
+
             await self.start_listening()
 
             # Keep the task alive; all work happens via event handlers
